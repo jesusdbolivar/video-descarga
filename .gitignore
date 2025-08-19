@@ -29,9 +29,18 @@ wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
+# PyInstaller - Archivos de compilación
 *.manifest
 *.spec
+build/
+dist/
+__pycache__/
+
+# Archivos ejecutables generados
+*.exe
+*.app
+*.deb
+*.rpm
 
 # Unit test / coverage reports
 htmlcov/
@@ -100,3 +109,18 @@ downloads/
 # Archivos de configuración local
 config.ini
 settings.json
+
+# Archivos temporales de Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Carpetas de compilación y distribución
+build/
+dist/
+*.spec
+
+# Archivos de backup
+*.bak
+*.backup
+*.old

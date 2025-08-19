@@ -10,6 +10,32 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
+def get_ytdlp_path():
+    """Obtiene la ruta correcta de yt-dlp, ya sea empaquetado o instalado"""
+    # Si estamos en un ejecutable empaquetado, buscar en el directorio del ejecutable
+    if getattr(sys, 'frozen', False):
+        # Ejecutable empaquetado
+        app_dir = os.path.dirname(sys.executable)
+        bundled_ytdlp = os.path.join(app_dir, 'yt-dlp.exe')
+        if os.path.exists(bundled_ytdlp):
+            return bundled_ytdlp
+    
+    # Buscar en el entorno virtual local
+    venv_ytdlp = os.path.join(os.getcwd(), "modules", "Scripts", "yt-dlp.exe")
+    if os.path.exists(venv_ytdlp):
+        return venv_ytdlp
+    
+    # Buscar en el PATH del sistema
+    try:
+        result = subprocess.run(['where', 'yt-dlp'], capture_output=True, text=True, shell=True)
+        if result.returncode == 0:
+            return result.stdout.strip().split('\n')[0]
+    except:
+        pass
+    
+    # Como último recurso, usar 'yt-dlp' (debe estar en PATH)
+    return 'yt-dlp'
+
 class YTDLPWorker(QThread):
     progress = pyqtSignal(int)
     log = pyqtSignal(str)
@@ -17,10 +43,9 @@ class YTDLPWorker(QThread):
     finished = pyqtSignal()
     current_progress = pyqtSignal(str)
 
-    def __init__(self, commands, output_dir):
+    def __init__(self, commands):
         super().__init__()
         self.commands = commands
-        self.output_dir = output_dir
         self._is_running = True
 
     def run(self):
@@ -61,8 +86,6 @@ class YTDLPWorker(QThread):
                 process.wait()
                 if process.returncode != 0:
                     self.error.emit(f"Error en descarga del video {idx + 1}: Código de salida {process.returncode}")
-                    # Limpiar archivos temporales en caso de error
-                    self.cleanup_temp_files(self.output_dir)
                 else:
                     self.log.emit(f"✓ Video {idx + 1} descargado exitosamente\n")
                     
@@ -80,27 +103,6 @@ class YTDLPWorker(QThread):
     def stop(self):
         self._is_running = False
 
-    def cleanup_temp_files(self, output_dir):
-        """Limpiar archivos temporales (.part, .part-Frag, etc.)"""
-        try:
-            import glob
-            temp_patterns = [
-                os.path.join(output_dir, "*.part"),
-                os.path.join(output_dir, "*.part-Frag*"),
-                os.path.join(output_dir, "*.ytdl"),
-                os.path.join(output_dir, "*.temp"),
-            ]
-            
-            for pattern in temp_patterns:
-                for temp_file in glob.glob(pattern):
-                    try:
-                        os.remove(temp_file)
-                        self.log.emit(f"🗑️ Archivo temporal eliminado: {os.path.basename(temp_file)}")
-                    except:
-                        pass  # Ignorar errores al eliminar archivos temporales
-        except Exception:
-            pass  # Ignorar errores en la limpieza
-
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -113,22 +115,18 @@ class MainWindow(QWidget):
     def check_ytdlp(self):
         """Verificar si yt-dlp está disponible"""
         try:
-            # Intentar usar yt-dlp del entorno virtual primero
-            ytdlp_path = os.path.join(os.path.dirname(__file__), "modules", "Scripts", "yt-dlp.exe")
-            if os.path.exists(ytdlp_path):
-                self.ytdlp_cmd = ytdlp_path
-            else:
-                self.ytdlp_cmd = "yt-dlp"
-                
-            result = subprocess.run([self.ytdlp_cmd, '--version'], capture_output=True, text=True, timeout=10)
+            ytdlp_path = get_ytdlp_path()
+            result = subprocess.run([ytdlp_path, '--version'], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 self.ytdlp_available = True
                 self.ytdlp_version = result.stdout.strip()
+                self.ytdlp_path = ytdlp_path
             else:
                 self.ytdlp_available = False
+                self.ytdlp_path = 'yt-dlp'
         except (FileNotFoundError, subprocess.TimeoutExpired):
             self.ytdlp_available = False
-            self.ytdlp_cmd = "yt-dlp"
+            self.ytdlp_path = 'yt-dlp'
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -146,15 +144,12 @@ class MainWindow(QWidget):
         # Campo de URLs
         url_group = QGroupBox("URLs para descargar")
         url_layout = QVBoxLayout()
-        url_help = QLabel("Formato: URL1, URL2:referer_completo, URL3, ...")
-        url_help2 = QLabel("Ejemplo: https://player.vimeo.com/video/123:https://escuela.it/cursos/...")
+        url_help = QLabel("Formato: URL1, URL2:referer, URL3, ...")
         url_help.setStyleSheet("font-style: italic; color: gray;")
-        url_help2.setStyleSheet("font-style: italic; color: #666; font-size: 11px;")
         self.url_input = QTextEdit()
         self.url_input.setMaximumHeight(100)
-        self.url_input.setPlaceholderText("https://ejemplo.com/video1, https://player.vimeo.com/video/123:https://referer.com")
+        self.url_input.setPlaceholderText("https://ejemplo.com/video1, https://ejemplo.com/video2:https://referer.com")
         url_layout.addWidget(url_help)
-        url_layout.addWidget(url_help2)
         url_layout.addWidget(self.url_input)
         url_group.setLayout(url_layout)
         layout.addWidget(url_group)
@@ -183,11 +178,17 @@ class MainWindow(QWidget):
         self.audio_only_checkbox = QCheckBox("Solo audio")
         options_layout.addWidget(self.audio_only_checkbox, 1, 1)
 
+        # Playlist option
+        self.no_playlist_checkbox = QCheckBox("Solo video individual (no playlist)")
+        self.no_playlist_checkbox.setChecked(True)  # Marcado por defecto
+        self.no_playlist_checkbox.setToolTip("Si está marcado, solo descarga el video individual aunque sea parte de una playlist")
+        options_layout.addWidget(self.no_playlist_checkbox, 2, 0)
+
         # Carpeta de descarga
-        options_layout.addWidget(QLabel("Carpeta:"), 1, 2)
+        options_layout.addWidget(QLabel("Carpeta:"), 2, 1)
         self.output_dir = QLineEdit()
         self.output_dir.setText("./downloads")
-        options_layout.addWidget(self.output_dir, 1, 3)
+        options_layout.addWidget(self.output_dir, 2, 2, 1, 2)  # Span 2 columns
 
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
@@ -253,6 +254,7 @@ class MainWindow(QWidget):
         quality_opt = self.quality_combo.currentText()
         subs_opt = self.subs_checkbox.isChecked()
         audio_only = self.audio_only_checkbox.isChecked()
+        no_playlist = self.no_playlist_checkbox.isChecked()
         
         commands = []
         for url in urls:
@@ -266,12 +268,26 @@ class MainWindow(QWidget):
                     if last_colon_pos > 8:  # Asegurar que no sea el protocolo inicial
                         referer = url[last_colon_pos + 1:].strip()
                         url = url[:last_colon_pos].strip()
+                        
+                        # CORRECCIÓN ESPECIAL PARA VIMEO EMBEDS
+                        if 'player.vimeo.com/video/' in url:
+                            # Para Vimeo embebido, usar la URL de Vimeo como principal
+                            # y la página del curso como referer
+                            self.terminal.append(f"🎬 Vimeo embed detectado: usando URL de Vimeo como principal")
+                            self.terminal.append(f"📺 URL de Vimeo: {url}")
+                            self.terminal.append(f"🌐 Referer (página del curso): {referer}")
+                            # url y referer ya están en la posición correcta
+                        elif 'vimeo.com' in url and 'vimeo.com' in referer:
+                            # Para otros casos de Vimeo, usar referer normalmente
+                            self.terminal.append(f"🎬 Vimeo URL con referer: {url}")
+                            self.terminal.append(f"🌐 Referer: {referer}")
+                            
             elif ':' in url and not url.startswith(("http://", "https://")) and url.count(':') == 1:
                 # Caso simple sin protocolo
                 parts = url.split(":", 1)
                 url, referer = parts[0].strip(), parts[1].strip()
             
-            cmd = [self.ytdlp_cmd, url]
+            cmd = [self.ytdlp_path, url]
             
             # Formato y calidad
             if audio_only:
@@ -289,21 +305,26 @@ class MainWindow(QWidget):
             if referer:
                 cmd += ["--referer", referer]
             
-            # Directorio de salida con nombre de archivo más compatible
-            safe_filename = "%(title)s.%(ext)s"
-            cmd += ["-o", f"{output_dir}/{safe_filename}"]
+            # Directorio de salida
+            cmd += ["-o", f"{output_dir}/%(title)s.%(ext)s"]
             
-            # Opciones adicionales para mejor compatibilidad en Windows
-            cmd += [
-                "--no-warnings",
+            # Opciones adicionales para mejor compatibilidad
+            additional_options = [
+                "--no-warnings", 
                 "--no-check-certificates",
-                "--restrict-filenames",  # Usar solo caracteres ASCII seguros
-                "--windows-filenames",   # Nombres de archivo compatibles con Windows
-                "--fragment-retries", "5",  # Reintentar fragmentos fallidos
-                "--retries", "3",        # Reintentar descargas fallidas
-                "--file-access-retries", "5",  # Reintentar acceso a archivos
-                "--no-continue",         # No continuar descargas parciales para evitar conflictos
+                "--restrict-filenames",
+                "--windows-filenames",
+                "--fragment-retries", "5",
+                "--retries", "3",
+                "--file-access-retries", "5",
+                "--no-continue"
             ]
+            
+            # Solo agregar --no-playlist si la opción está marcada
+            if no_playlist:
+                additional_options.append("--no-playlist")
+                
+            cmd += additional_options
             
             commands.append(cmd)
         
@@ -312,7 +333,7 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(0)
         self.status_label.setText(f"Descargando {len(commands)} video(s)...")
         
-        self.worker = YTDLPWorker(commands, output_dir)
+        self.worker = YTDLPWorker(commands)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.log.connect(self.append_terminal)
         self.worker.error.connect(self.show_error)
