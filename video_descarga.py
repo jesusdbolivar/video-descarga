@@ -21,7 +21,7 @@ def get_ytdlp_path():
             return bundled_ytdlp
     
     # Buscar en el entorno virtual local
-    venv_ytdlp = os.path.join(os.getcwd(), "modules", "Scripts", "yt-dlp.exe")
+    venv_ytdlp = os.path.join(os.getcwd(), ".venv", "Scripts", "yt-dlp.exe")
     if os.path.exists(venv_ytdlp):
         return venv_ytdlp
     
@@ -35,6 +35,27 @@ def get_ytdlp_path():
     
     # Como último recurso, usar 'yt-dlp' (debe estar en PATH)
     return 'yt-dlp'
+
+def get_ffmpeg_path():
+    """Obtiene la ruta correcta de ffmpeg, ya sea empaquetado o instalado"""
+    # Si estamos en un ejecutable empaquetado, buscar en el directorio del ejecutable
+    if getattr(sys, 'frozen', False):
+        # Ejecutable empaquetado
+        app_dir = os.path.dirname(sys.executable)
+        bundled_ffmpeg = os.path.join(app_dir, 'ffmpeg.exe')
+        if os.path.exists(bundled_ffmpeg):
+            return bundled_ffmpeg
+    
+    # Buscar en el PATH del sistema
+    try:
+        result = subprocess.run(['where', 'ffmpeg'], capture_output=True, text=True, shell=True)
+        if result.returncode == 0:
+            return result.stdout.strip().split('\n')[0]
+    except:
+        pass
+    
+    # Como último recurso, usar 'ffmpeg' (debe estar en PATH)
+    return 'ffmpeg'
 
 class YTDLPWorker(QThread):
     progress = pyqtSignal(int)
@@ -110,6 +131,7 @@ class MainWindow(QWidget):
         self.setGeometry(100, 100, 900, 700)
         self.worker = None
         self.check_ytdlp()
+        self.check_ffmpeg()
         self.init_ui()
 
     def check_ytdlp(self):
@@ -128,6 +150,33 @@ class MainWindow(QWidget):
             self.ytdlp_available = False
             self.ytdlp_path = 'yt-dlp'
 
+    def check_ffmpeg(self):
+        """Verificar si ffmpeg está disponible"""
+        try:
+            ffmpeg_path = get_ffmpeg_path()
+            result = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                self.ffmpeg_available = True
+                self.ffmpeg_path = ffmpeg_path
+                # Extraer versión de ffmpeg
+                lines = result.stdout.split('\n')
+                if lines:
+                    version_line = lines[0]
+                    if 'ffmpeg version' in version_line:
+                        self.ffmpeg_version = version_line.split('ffmpeg version')[1].split()[0]
+                    else:
+                        self.ffmpeg_version = "Desconocida"
+                else:
+                    self.ffmpeg_version = "Desconocida"
+            else:
+                self.ffmpeg_available = False
+                self.ffmpeg_path = 'ffmpeg'
+                self.ffmpeg_version = None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            self.ffmpeg_available = False
+            self.ffmpeg_path = 'ffmpeg'
+            self.ffmpeg_version = None
+
     def init_ui(self):
         layout = QVBoxLayout()
 
@@ -140,6 +189,16 @@ class MainWindow(QWidget):
             info_label = QLabel(f"✓ yt-dlp disponible: {self.ytdlp_version}")
             info_label.setStyleSheet("color: green; font-weight: bold; padding: 5px;")
             layout.addWidget(info_label)
+
+        # Información de FFmpeg
+        if not self.ffmpeg_available:
+            ffmpeg_warning = QLabel("⚠️ FFmpeg no está disponible. Algunas funciones pueden no funcionar correctamente.")
+            ffmpeg_warning.setStyleSheet("color: orange; font-weight: bold; padding: 10px; background-color: #fff8e1; border: 1px solid orange;")
+            layout.addWidget(ffmpeg_warning)
+        else:
+            ffmpeg_info = QLabel(f"✓ FFmpeg disponible: {self.ffmpeg_version}")
+            ffmpeg_info.setStyleSheet("color: green; font-weight: bold; padding: 5px;")
+            layout.addWidget(ffmpeg_info)
 
         # Campo de URLs
         url_group = QGroupBox("URLs para descargar")
@@ -289,13 +348,21 @@ class MainWindow(QWidget):
             
             cmd = [self.ytdlp_path, url]
             
+            # Configurar FFmpeg si está disponible
+            if self.ffmpeg_available:
+                cmd += ["--ffmpeg-location", self.ffmpeg_path]
+            
             # Formato y calidad
             if audio_only:
                 cmd += ["-f", "bestaudio/best", "--extract-audio", "--audio-format", "mp3"]
             else:
-                cmd += ["-f", quality_opt]
-                if format_opt != "best":
-                    cmd += ["--recode-video", format_opt]
+                if quality_opt == "best":
+                    # Para YouTube y sitios que separan audio y video
+                    cmd += ["-f", "bestvideo+bestaudio", "--merge-output-format", format_opt]
+                else:
+                    cmd += ["-f", quality_opt]
+                    if format_opt != "best":
+                        cmd += ["--recode-video", format_opt]
             
             # Subtítulos
             if subs_opt:

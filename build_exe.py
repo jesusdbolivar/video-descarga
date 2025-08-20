@@ -4,12 +4,15 @@ import os
 import sys
 import shutil
 import subprocess
+import urllib.request
+import zipfile
+import tempfile
 
 def get_yt_dlp_location():
     """Encuentra la ubicación de yt-dlp"""
     try:
         # Buscar en el entorno virtual
-        venv_path = os.path.join(os.getcwd(), "modules", "Scripts", "yt-dlp.exe")
+        venv_path = os.path.join(os.getcwd(), ".venv", "Scripts", "yt-dlp.exe")
         if os.path.exists(venv_path):
             return venv_path
         
@@ -26,6 +29,67 @@ def get_yt_dlp_location():
         pass
     
     return None
+
+def download_ffmpeg():
+    """Descarga FFmpeg desde la fuente oficial"""
+    print("🔽 Descargando FFmpeg...")
+    
+    # URL de FFmpeg para Windows (versión estática)
+    ffmpeg_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    
+    # Crear directorio temporal
+    temp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(temp_dir, "ffmpeg.zip")
+    
+    try:
+        # Descargar FFmpeg
+        print("📥 Descargando desde GitHub...")
+        urllib.request.urlretrieve(ffmpeg_url, zip_path)
+        
+        # Extraer el archivo ZIP
+        print("📦 Extrayendo FFmpeg...")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        
+        # Buscar el ejecutable ffmpeg.exe
+        ffmpeg_exe = None
+        for root, dirs, files in os.walk(temp_dir):
+            if 'ffmpeg.exe' in files:
+                ffmpeg_exe = os.path.join(root, 'ffmpeg.exe')
+                break
+        
+        if ffmpeg_exe and os.path.exists(ffmpeg_exe):
+            print(f"✅ FFmpeg encontrado: {ffmpeg_exe}")
+            return ffmpeg_exe
+        else:
+            print("❌ ERROR: No se encontró ffmpeg.exe en el archivo descargado")
+            return None
+            
+    except Exception as e:
+        print(f"❌ ERROR descargando FFmpeg: {e}")
+        return None
+    finally:
+        # Limpiar archivos temporales
+        try:
+            os.remove(zip_path)
+        except:
+            pass
+
+def get_or_download_ffmpeg():
+    """Obtiene FFmpeg, descargándolo si es necesario"""
+    # Primero intentar encontrar FFmpeg instalado
+    try:
+        result = subprocess.run(['where', 'ffmpeg'], capture_output=True, text=True, shell=True)
+        if result.returncode == 0:
+            ffmpeg_path = result.stdout.strip().split('\n')[0]
+            print(f"✅ FFmpeg encontrado en el sistema: {ffmpeg_path}")
+            return ffmpeg_path
+    except:
+        pass
+    
+    # Si no está instalado, descargarlo
+    print("⚠️ FFmpeg no encontrado en el sistema, descargando...")
+    return download_ffmpeg()
 
 def build_executable():
     """Construye el ejecutable con todas las dependencias"""
@@ -44,6 +108,14 @@ def build_executable():
     
     print(f"✅ yt-dlp encontrado en: {yt_dlp_path}")
     
+    # Obtener FFmpeg
+    ffmpeg_path = get_or_download_ffmpeg()
+    if not ffmpeg_path:
+        print("❌ ERROR: No se pudo obtener FFmpeg")
+        return False
+    
+    print(f"✅ FFmpeg disponible: {ffmpeg_path}")
+    
     # Crear directorio de datos adicionales
     data_dir = "additional_data"
     os.makedirs(data_dir, exist_ok=True)
@@ -54,8 +126,15 @@ def build_executable():
         shutil.copy2(yt_dlp_path, yt_dlp_dest)
         print(f"✅ yt-dlp copiado a {yt_dlp_dest}")
     
+    # Copiar FFmpeg al directorio de datos
+    if ffmpeg_path:
+        ffmpeg_dest = os.path.join(data_dir, "ffmpeg.exe")
+        shutil.copy2(ffmpeg_path, ffmpeg_dest)
+        print(f"✅ FFmpeg copiado a {ffmpeg_dest}")
+    
     # Preparar argumentos para PyInstaller
     yt_dlp_full_path = os.path.abspath(os.path.join(data_dir, "yt-dlp.exe"))
+    ffmpeg_full_path = os.path.abspath(os.path.join(data_dir, "ffmpeg.exe"))
     args = [
         '--name=VideoDescarga',
         '--windowed',  # No mostrar consola
@@ -76,8 +155,9 @@ def build_executable():
         '--hidden-import=os',
         '--hidden-import=sys',
         '--hidden-import=re',
-        # Incluir datos adicionales
+        # Incluir datos adicionales (yt-dlp y ffmpeg)
         f'--add-data={yt_dlp_full_path}{os.pathsep}.',
+        f'--add-data={ffmpeg_full_path}{os.pathsep}.',
         # Opciones de Windows
         '--noupx',
         '--exclude-module=tkinter',
@@ -122,6 +202,19 @@ def cleanup_temp_files():
                 print(f"🗑️ Directorio temporal eliminado: {temp_dir}")
             except:
                 print(f"⚠️ No se pudo eliminar: {temp_dir}")
+    
+    # Limpiar archivos temporales de FFmpeg si existen
+    temp_files = ['ffmpeg.zip', 'ffmpeg_temp']
+    for temp_file in temp_files:
+        if os.path.exists(temp_file):
+            try:
+                if os.path.isdir(temp_file):
+                    shutil.rmtree(temp_file)
+                else:
+                    os.remove(temp_file)
+                print(f"🗑️ Archivo temporal eliminado: {temp_file}")
+            except:
+                print(f"⚠️ No se pudo eliminar: {temp_file}")
 
 if __name__ == "__main__":
     print("🚀 Video Descarga - Constructor de Ejecutable")
